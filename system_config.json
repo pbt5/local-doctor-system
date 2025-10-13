@@ -1,0 +1,13 @@
+{
+  "pillbox_ip": "192.168.4.2",
+  "pillbox_port": 8080,
+  "smtp_server": "smtp.gmail.com",
+  "smtp_port": 587,
+  "sender_email": "",
+  "sender_password": "",
+  "medication_check_interval": 60,
+  "missed_medication_threshold": 30,
+  "database_path": "pillbox_system.db",
+  "auto_start_monitoring": false,
+  "auto_connect_pillbox": false
+}

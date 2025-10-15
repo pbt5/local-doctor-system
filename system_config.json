@@ -3,11 +3,19 @@
   "pillbox_port": 8080,
   "smtp_server": "smtp.gmail.com",
   "smtp_port": 587,
-  "sender_email": "",
-  "sender_password": "",
+  "sender_email": "pillbox542@gmail.com",
+  "sender_password": "aciu gbhj oqdc skhu",
   "medication_check_interval": 60,
   "missed_medication_threshold": 30,
   "database_path": "pillbox_system.db",
   "auto_start_monitoring": false,
-  "auto_connect_pillbox": false
+  "auto_connect_pillbox": false,
+  "family_contacts": [
+    {
+      "name": "pillbox542@gmail.com",
+      "email": "pillbox542@gmail.com",
+      "relationship": "tester",
+      "notification_level": "all"
+    }
+  ]
 }

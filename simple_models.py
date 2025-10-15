@@ -4,7 +4,7 @@ Fixed patient (one person), fixed medications (M0-M9), only manages medication s
 """
 import json
 import sqlite3
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -244,3 +244,210 @@ if __name__ == "__main__":
         print(f"- {med_name}: {schedule.dosage_count} pills, {schedule.times_per_day} times daily")
         print(f"  Times: {', '.join(schedule.schedule_times)}")
         print(f"  Instructions: {schedule.notes}")
+
+class MedicationRecorder:
+    """Medication Time Recording System"""
+    
+    def __init__(self, db_manager: Optional[SimpleDataManager] = None):
+        self.db_manager = db_manager or SimpleDataManager()
+        
+    def process_sensor_data(self, compartment_id: str, opened_time: str = None):
+        """Process sensor data when compartment is opened"""
+        
+        if opened_time is None:
+            opened_time = datetime.now().strftime("%H:%M")
+        
+        # 1. 找到對應的藥物排程
+        schedules = self.db_manager.get_active_schedules()
+        target_schedule = None
+        
+        medication_id = f"M{compartment_id}" if compartment_id.isdigit() else compartment_id
+        
+        for schedule in schedules:
+            if schedule.medication_id == medication_id:
+                target_schedule = schedule
+                break
+        
+        if not target_schedule:
+            print(f"No active schedule found for compartment {compartment_id}")
+            return None
+        
+        # 2. 判斷用藥狀態
+        current_time = datetime.now()
+        status = self._determine_medication_status(target_schedule, current_time)
+        
+        # 3. 建立用藥記錄
+        record = SimpleMedicationRecord(
+            id=str(uuid.uuid4()),
+            schedule_id=target_schedule.id,
+            medication_id=target_schedule.medication_id,
+            scheduled_time=self._get_nearest_scheduled_time(target_schedule, current_time),
+            actual_time=opened_time,
+            status=status,
+            sensor_confirmed=True,
+            notes=f"Compartment {compartment_id} opened at {opened_time}"
+        )
+        
+        # 4. 儲存記錄
+        self.db_manager.save_record(record)
+        
+        med_name = get_medication_name(target_schedule.medication_id)
+        print(f"✅ Medication record saved: {med_name} at {opened_time} (Status: {status.value})")
+        
+        return record
+    
+    def _determine_medication_status(self, schedule, actual_time) -> MedicationStatus:
+        """Determine medication status based on timing"""
+        
+        nearest_scheduled = self._get_nearest_scheduled_time(schedule, actual_time)
+        if not nearest_scheduled:
+            return MedicationStatus.TAKEN
+            
+        # 解析時間
+        try:
+            scheduled_dt = datetime.strptime(nearest_scheduled, "%H:%M")
+        except ValueError:
+            return MedicationStatus.TAKEN
+        
+        # 轉換為同一天的時間進行比較
+        scheduled_today = actual_time.replace(
+            hour=scheduled_dt.hour, 
+            minute=scheduled_dt.minute, 
+            second=0, 
+            microsecond=0
+        )
+        
+        time_diff = abs((actual_time - scheduled_today).total_seconds() / 60)  # 分鐘差異
+        
+        if time_diff <= 15:  # 15分鐘內算準時
+            return MedicationStatus.TAKEN
+        elif time_diff <= 60:  # 1小時內算延遲但已服用
+            return MedicationStatus.TAKEN
+        else:  # 超過1小時算逾期
+            return MedicationStatus.TAKEN  # 還是算已服用，只是逾期了
+    
+    def _get_nearest_scheduled_time(self, schedule, current_time) -> Optional[str]:
+        """Find the nearest scheduled time"""
+        
+        current_time_str = current_time.strftime("%H:%M")
+        
+        # 找到最接近的排程時間
+        nearest_time = None
+        min_diff = float('inf')
+        
+        for time_str in schedule.schedule_times:
+            try:
+                scheduled_dt = datetime.strptime(time_str, "%H:%M")
+                current_dt = datetime.strptime(current_time_str, "%H:%M")
+                
+                diff = abs((scheduled_dt - current_dt).total_seconds())
+                if diff < min_diff:
+                    min_diff = diff
+                    nearest_time = time_str
+            except ValueError:
+                continue
+                
+        return nearest_time or (schedule.schedule_times[0] if schedule.schedule_times else None)
+    
+    def check_missed_medications(self):
+        """Check for missed medications and update status"""
+        
+        schedules = self.db_manager.get_active_schedules()
+        current_time = datetime.now()
+        current_date = current_time.date().strftime('%Y-%m-%d')
+        
+        missed_count = 0
+        
+        for schedule in schedules:
+            for time_str in schedule.schedule_times:
+                try:
+                    # 解析預定時間
+                    hour, minute = map(int, time_str.split(':'))
+                    scheduled_today = current_time.replace(
+                        hour=hour,
+                        minute=minute,
+                        second=0,
+                        microsecond=0
+                    )
+
+                    # 如果預定時間已過1分鐘且沒有用藥記錄
+                    if current_time > scheduled_today + timedelta(minutes=1):
+                        if not self._has_recent_record(schedule, time_str, current_date):
+                            # 建立錯過用藥的記錄
+                            missed_record = SimpleMedicationRecord(
+                                id=str(uuid.uuid4()),
+                                schedule_id=schedule.id,
+                                medication_id=schedule.medication_id,
+                                scheduled_time=time_str,
+                                actual_time=None,
+                                status=MedicationStatus.MISSED,
+                                sensor_confirmed=False,
+                                notes=f"Missed medication at scheduled time {time_str}"
+                            )
+                            
+                            self.db_manager.save_record(missed_record)
+                            med_name = get_medication_name(schedule.medication_id)
+                            print(f"⚠️ Missed medication recorded: {med_name} at {time_str}")
+                            missed_count += 1
+                            
+                except ValueError:
+                    continue
+        
+        return missed_count
+    
+    def _has_recent_record(self, schedule, time_str: str, date_str: str) -> bool:
+        """Check if there's a recent record for this schedule and time"""
+        
+        records = self.db_manager.get_recent_records(limit=100)
+        
+        for record in records:
+            if (record.schedule_id == schedule.id and 
+                record.scheduled_time == time_str and
+                record.created_at.startswith(date_str)):
+                return True
+                
+        return False
+    
+    def get_today_medication_summary(self) -> dict:
+        """Get today's medication summary"""
+        
+        today = datetime.now().date().strftime('%Y-%m-%d')
+        records = self.db_manager.get_recent_records(limit=100)
+        
+        today_records = [r for r in records if r.created_at.startswith(today)]
+        
+        summary = {
+            'date': today,
+            'total_scheduled': 0,
+            'taken': len([r for r in today_records if r.status == MedicationStatus.TAKEN]),
+            'missed': len([r for r in today_records if r.status == MedicationStatus.MISSED]),
+            'pending': 0,  # 計算當日剩餘待服用
+            'records': today_records
+        }
+        
+        # 計算今日總預定用藥次數
+        schedules = self.db_manager.get_active_schedules()
+        for schedule in schedules:
+            summary['total_scheduled'] += len(schedule.schedule_times)
+        
+        # 計算待服用數量
+        summary['pending'] = summary['total_scheduled'] - summary['taken'] - summary['missed']
+        
+        return summary
+    
+    def get_medication_adherence_rate(self, days: int = 7) -> float:
+        """Calculate medication adherence rate for recent days"""
+        
+        records = self.db_manager.get_recent_records(limit=500)
+        
+        # 過濾最近幾天的記錄
+        cutoff_date = (datetime.now() - timedelta(days=days)).date().strftime('%Y-%m-%d')
+        recent_records = [r for r in records if r.created_at >= cutoff_date]
+        
+        if not recent_records:
+            return 0.0
+        
+        taken_count = len([r for r in recent_records if r.status == MedicationStatus.TAKEN])
+        total_count = len(recent_records)
+        
+        return (taken_count / total_count) * 100 if total_count > 0 else 0.0

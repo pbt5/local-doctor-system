@@ -340,6 +340,69 @@ class SimpleDoctorInterface(QMainWindow):
             return
         
         QMessageBox.information(self, "Notice", "Test reminder function will be integrated in main program")
+    
+    def view_medication_records(self):
+        """View Medication Records"""
+        from simple_models import MedicationRecorder
+        
+        try:
+            recorder = MedicationRecorder(self.db_manager)
+            summary = recorder.get_today_medication_summary()
+            
+            # 建立記錄顯示對話框
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Medication Records")
+            dialog.setModal(True)
+            dialog.resize(600, 400)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # 今日統計
+            summary_label = QLabel(f"""
+            📊 Today's Summary ({summary['date']})
+            Total Scheduled: {summary['total_scheduled']}
+            ✅ Taken: {summary['taken']}
+            ❌ Missed: {summary['missed']}
+            ⏳ Pending: {summary['pending']}
+            """)
+            layout.addWidget(summary_label)
+            
+            # 記錄列表
+            records_text = QTextEdit()
+            records_text.setReadOnly(True)
+            
+            records_content = "📋 Recent Records:\n\n"
+            for record in summary['records']:
+                from simple_models import get_medication_name, MedicationStatus
+                
+                med_name = get_medication_name(record.medication_id)
+                status_icon = "✅" if record.status == MedicationStatus.TAKEN else "❌"
+                
+                records_content += f"{status_icon} {med_name}\n"
+                records_content += f"   Scheduled: {record.scheduled_time}\n"
+                records_content += f"   Actual: {record.actual_time or 'Not taken'}\n"
+                records_content += f"   Status: {record.status.value}\n"
+                if record.notes:
+                    records_content += f"   Notes: {record.notes}\n"
+                records_content += "\n"
+            
+            records_text.setPlainText(records_content)
+            layout.addWidget(records_text)
+            
+            # 依從率
+            adherence = recorder.get_medication_adherence_rate(days=7)
+            adherence_label = QLabel(f"📈 7-day Adherence Rate: {adherence:.1f}%")
+            layout.addWidget(adherence_label)
+            
+            # 關閉按鈕
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(dialog.close)
+            layout.addWidget(close_btn)
+            
+            dialog.exec()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load medication records: {str(e)}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

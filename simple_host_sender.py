@@ -117,8 +117,6 @@ class SimplePillboxCommunicator:
             if 'type' in status_data:
                 if status_data['type'] == 'compartment_status':
                     self._handle_compartment_status(status_data)
-                elif status_data['type'] == 'sensor_data':
-                    self._handle_sensor_data(status_data)
                     
         except json.JSONDecodeError:
             print(f"Invalid JSON received: {data}")
@@ -145,13 +143,7 @@ class SimplePillboxCommunicator:
                 except Exception as e:
                     print(f"Callback error: {e}")
     
-    def _handle_sensor_data(self, data: Dict):
-        """Handle Sensor Data"""
-        for callback in self.status_callbacks:
-            try:
-                callback('sensor_data', data)
-            except Exception as e:
-                print(f"Callback error: {e}")
+
 
     def send_medication_config(self, config: Dict[str, str]) -> bool:
         """Send Medication Configuration to Pillbox
@@ -163,18 +155,6 @@ class SimplePillboxCommunicator:
             'timestamp': datetime.now().isoformat()
         }
         return self._send_json(config_data)
-    
-    def send_medication_alert(self, alert: SimpleAlert) -> bool:
-        """Send Medication Alert (including instructions)"""
-        alert_data = {
-            'type': 'medication_alert',
-            'medication_id': alert.medication_id,
-            'scheduled_time': alert.scheduled_time,
-            'dosage_count': alert.dosage_count,
-            'notes': alert.notes,  # Instructions
-            'timestamp': datetime.now().isoformat()
-        }
-        return self._send_json(alert_data)
     
     def send_display_message(self, medication_id: str, dosage_count: int, 
                            scheduled_time: str, notes: str, duration: int = 30) -> bool:
@@ -212,15 +192,6 @@ class SimplePillboxCommunicator:
         }
         return self._send_json(request_data)
     
-    def send_time_sync(self) -> bool:
-        """Sync Time to Pillbox"""
-        sync_data = {
-            'type': 'time_sync',
-            'current_time': datetime.now().isoformat(),
-            'timezone': 'Asia/Taipei'
-        }
-        return self._send_json(sync_data)
-    
     def _send_json(self, data: Dict) -> bool:
         """Send JSON Format Data"""
         if not self.is_connected or not self.socket:
@@ -241,10 +212,6 @@ class SimplePillboxCommunicator:
         except Exception as e:
             print(f"JSON send error: {e}")
             return False
-    
-    def get_all_status(self) -> Dict[str, PillboxStatus]:
-        """Get All Compartment Status"""
-        return self.last_status.copy()
 
 # Maintain backward compatibility
 class ESP32Sender:

@@ -49,7 +49,7 @@ def initialize_system():
 def main():
     """Main program"""
     print("=" * 50)
-    print("Smart Pillbox Management System v1.0 (Simplified Version)")
+    print("Smart Pillbox Management System v2.0 (Local Version)")
     print("EE542 Project")
     print("=" * 50)
     print("Simplification description:")
@@ -78,7 +78,7 @@ def main():
         
         app = QApplication(sys.argv)
         app.setApplicationName("Smart Pillbox Management System")
-        app.setApplicationVersion("1.0 (Simplified Version)")
+        app.setApplicationVersion("2.0 (Local Version)")
         app.setOrganizationName("EE542")
         
         window = SimpleMainWindow()

@@ -213,7 +213,19 @@ class SystemStatusWidget(QWidget):
         """Handle pillbox status callback"""
         try:
             current_text = self.status_text.toPlainText()
-            new_line = f"[{datetime.now().strftime('%H:%M:%S')}] {status_type}: {data}\n"
+            
+            # 特殊處理用藥記錄事件
+            if status_type == 'medication_taken':
+                medication_id = data.get('medication_id', 'Unknown')
+                time_taken = data.get('time', 'Unknown')
+                status = data.get('status', 'unknown')
+                
+                from simple_models import get_medication_name
+                med_name = get_medication_name(medication_id)
+                
+                new_line = f"[{datetime.now().strftime('%H:%M:%S')}] 💊 {med_name} taken at {time_taken} ({status})\n"
+            else:
+                new_line = f"[{datetime.now().strftime('%H:%M:%S')}] {status_type}: {data}\n"
             
             # Limit display lines
             lines = current_text.split('\n')
@@ -228,25 +240,52 @@ class SystemStatusWidget(QWidget):
             cursor.movePosition(cursor.MoveOperation.End)
             self.status_text.setTextCursor(cursor)
             
+            # 如果是用藥事件，更新統計顯示
+            if status_type == 'medication_taken':
+                self.update_medication_summary()
+            
         except Exception as e:
             print(f"Error handling status: {e}")
+    
+    def update_medication_summary(self):
+        """Update medication summary display"""
+        try:
+            from simple_models import MedicationRecorder
+            recorder = MedicationRecorder(self.db_manager)
+            summary = recorder.get_today_medication_summary()
+            
+            # 更新狀態顯示 (如果有summary widget的話)
+            summary_text = f"Today's Summary: {summary['taken']}/{summary['total_scheduled']} taken, {summary['missed']} missed"
+            print(summary_text)  # 或者更新到某個label
+            
+        except Exception as e:
+            print(f"Error updating summary: {e}")
 
 class SimpleMainWindow(QMainWindow):
-    """Simplified Main Window"""
+    """Main Window"""
     
     def __init__(self):
         super().__init__()
         
         # Initialize core components
         self.pillbox_comm = SimplePillboxCommunicator()
+        from simple_models import SimpleDataManager
+        from enhanced_notifications import EnhancedMedicationRecorder
+        self.db_manager = SimpleDataManager()
+        self.medication_recorder = EnhancedMedicationRecorder(self.db_manager, enable_notifications=True)
         
-        self.setWindowTitle('Smart Pillbox Management System (Simplified Version)')
+        self.setWindowTitle('Smart Pillbox Management System')
         self.setGeometry(100, 100, 1200, 800)
         
         # Set font
         font = QFont()
         font.setPointSize(10)
         self.setFont(font)
+        
+        # Setup auto-check for missed medications
+        self.missed_check_timer = QTimer()
+        self.missed_check_timer.timeout.connect(self.check_missed_medications)
+        self.missed_check_timer.start(60000)  # Check every minute
         
         self.setup_ui()
     
@@ -258,7 +297,7 @@ class SimpleMainWindow(QMainWindow):
         layout = QVBoxLayout(central_widget)
         
         # Title
-        title_label = QLabel("Smart Pillbox Management System (Simplified Version)")
+        title_label = QLabel("Smart Pillbox Management System")
         title_font = QFont()
         title_font.setPointSize(18)
         title_font.setBold(True)
@@ -279,6 +318,14 @@ class SimpleMainWindow(QMainWindow):
         # Medication schedule tab
         self.doctor_interface = SimpleDoctorInterface()
         tab_widget.addTab(self.doctor_interface.centralWidget(), "Medication Schedule Management")
+        
+        # NEW: Medication Calendar tab
+        try:
+            from medication_calendar import MedicationCalendarWidget
+            self.calendar_widget = MedicationCalendarWidget()
+            tab_widget.addTab(self.calendar_widget, "📅 Medication Records Calendar")
+        except ImportError:
+            print("⚠️ Medication calendar not available")
         
         # System status tab
         self.status_widget = SystemStatusWidget(self.pillbox_comm)
@@ -336,8 +383,25 @@ class SimpleMainWindow(QMainWindow):
             self.input_box.clear()
             print(f"Sent: {message}")
     
+    def check_missed_medications(self):
+        """Check for missed medications periodically"""
+        try:
+            missed_count = self.medication_recorder.check_missed_medications()
+            if missed_count > 0:
+                print(f"Found {missed_count} missed medications")
+            
+            # Trigger notification check for EnhancedMedicationRecorder
+            if hasattr(self.medication_recorder, 'check_and_send_notifications'):
+                self.medication_recorder.check_and_send_notifications()
+                
+        except Exception as e:
+            print(f"Error checking missed medications: {e}")
+    
     def closeEvent(self, event):
         """Cleanup when closing program"""
+        # Stop timers
+        self.missed_check_timer.stop()
+        
         # Disconnect pillbox connection
         self.pillbox_comm.disconnect()
         self.esp32_sender.close()
@@ -349,7 +413,7 @@ if __name__ == '__main__':
     
     # Set application information
     app.setApplicationName("Smart Pillbox Management System")
-    app.setApplicationVersion("1.0 (Simplified Version)")
+    app.setApplicationVersion("2.0")
     app.setOrganizationName("EE542")
     
     window = SimpleMainWindow()

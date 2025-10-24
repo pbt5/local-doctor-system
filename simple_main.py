@@ -26,9 +26,11 @@ class SystemStatusWidget(QWidget):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_status)
         self.timer.start(5000)  # Update every 5 seconds
-        
-        # Set pillbox status callback
-        self.pillbox_comm.add_status_callback(self.handle_pillbox_status)
+
+        # Setup message queue polling timer (thread-safe)
+        self.message_timer = QTimer()
+        self.message_timer.timeout.connect(self.process_message_queue)
+        self.message_timer.start(100)  # Check message queue every 100ms
     
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -101,7 +103,15 @@ class SystemStatusWidget(QWidget):
         simple_layout.addWidget(self.simple_message_edit)
         simple_layout.addWidget(self.send_simple_btn)
         test_layout.addLayout(simple_layout)
-        
+
+        # Set time button
+        time_layout = QHBoxLayout()
+        time_layout.addWidget(QLabel("Sync ESP32 time to computer time:"))
+        self.set_time_btn = QPushButton("Set ESP32 Time")
+        self.set_time_btn.clicked.connect(self.set_esp32_time)
+        time_layout.addWidget(self.set_time_btn)
+        test_layout.addLayout(time_layout)
+
         layout.addWidget(test_group)
         
         # Status display
@@ -192,25 +202,56 @@ class SystemStatusWidget(QWidget):
         if not self.pillbox_comm.is_connected:
             QMessageBox.warning(self, "Warning", "Please connect to pillbox first")
             return
-        
+
         message = self.simple_message_edit.text().strip()
         if not message:
             return
-        
+
         # Use display_message to send
         simple_data = {
             'type': 'simple_message',
             'message': message,
             'timestamp': 'now'
         }
-        
+
         if self.pillbox_comm._send_json(simple_data):
             QMessageBox.information(self, "Success", "Message sent")
         else:
             QMessageBox.warning(self, "Failed", "Message send failed")
+
+    def set_esp32_time(self):
+        """Set ESP32 RTC time to computer time"""
+        if not self.pillbox_comm.is_connected:
+            QMessageBox.warning(self, "Warning", "Please connect to pillbox first")
+            return
+
+        # Get current computer time
+        now = datetime.now()
+        datetime_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Send SET_TIME command
+        time_data = {
+            'cmd': 'SET_TIME',
+            'datetime': datetime_str
+        }
+
+        if self.pillbox_comm._send_json(time_data):
+            QMessageBox.information(self, "Success", f"ESP32 time set to: {datetime_str}")
+        else:
+            QMessageBox.warning(self, "Failed", "Failed to set ESP32 time")
     
+    def process_message_queue(self):
+        """Process messages from pillbox message queue (runs in GUI thread)"""
+        try:
+            # Process all pending messages in the queue
+            while not self.pillbox_comm.message_queue.empty():
+                msg_type, data = self.pillbox_comm.message_queue.get_nowait()
+                self.handle_pillbox_status(msg_type, data)
+        except Exception:
+            pass  # Silently handle exceptions
+
     def handle_pillbox_status(self, status_type: str, data):
-        """Handle pillbox status callback"""
+        """Handle pillbox status callback (now called from GUI thread)"""
         try:
             current_text = self.status_text.toPlainText()
             
@@ -316,7 +357,7 @@ class SimpleMainWindow(QMainWindow):
         layout.addWidget(tab_widget)
         
         # Medication schedule tab
-        self.doctor_interface = SimpleDoctorInterface()
+        self.doctor_interface = SimpleDoctorInterface(pillbox_comm=self.pillbox_comm)
         tab_widget.addTab(self.doctor_interface.centralWidget(), "Medication Schedule Management")
         
         # NEW: Medication Calendar tab
@@ -330,58 +371,6 @@ class SimpleMainWindow(QMainWindow):
         # System status tab
         self.status_widget = SystemStatusWidget(self.pillbox_comm)
         tab_widget.addTab(self.status_widget, "Pillbox Connection & Testing")
-        
-        # Simple communication test tab (preserve original functionality)
-        self.simple_comm_widget = self.create_simple_comm_widget()
-        tab_widget.addTab(self.simple_comm_widget, "Simple Communication Test")
-    
-    def create_simple_comm_widget(self):
-        """Create simple communication test interface"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        
-        # Use ESP32Sender to maintain backward compatibility
-        self.esp32_sender = ESP32Sender()
-        
-        # Status label
-        self.esp32_status_label = QLabel('Not connected')
-        layout.addWidget(self.esp32_status_label)
-        
-        # Connect button
-        connect_btn = QPushButton('Connect ESP32')
-        connect_btn.clicked.connect(self.connect_esp32)
-        layout.addWidget(connect_btn)
-        
-        # Input box
-        self.input_box = QLineEdit()
-        self.input_box.setPlaceholderText('Enter any characters...')
-        self.input_box.returnPressed.connect(self.send_simple_message)
-        layout.addWidget(self.input_box)
-        
-        # Send button
-        send_btn = QPushButton('Send')
-        send_btn.clicked.connect(self.send_simple_message)
-        layout.addWidget(send_btn)
-        
-        layout.addStretch()
-        
-        return widget
-    
-    def connect_esp32(self):
-        """Connect ESP32 (simple mode)"""
-        if self.esp32_sender.connect():
-            self.esp32_status_label.setText('✓ Connected')
-            self.esp32_status_label.setStyleSheet('color: green')
-        else:
-            self.esp32_status_label.setText('✗ Connection failed')
-            self.esp32_status_label.setStyleSheet('color: red')
-    
-    def send_simple_message(self):
-        """Send simple message"""
-        message = self.input_box.text()
-        if message and self.esp32_sender.send(message):
-            self.input_box.clear()
-            print(f"Sent: {message}")
     
     def check_missed_medications(self):
         """Check for missed medications periodically"""
@@ -401,11 +390,10 @@ class SimpleMainWindow(QMainWindow):
         """Cleanup when closing program"""
         # Stop timers
         self.missed_check_timer.stop()
-        
+
         # Disconnect pillbox connection
         self.pillbox_comm.disconnect()
-        self.esp32_sender.close()
-        
+
         event.accept()
 
 if __name__ == '__main__':

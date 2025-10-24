@@ -150,10 +150,11 @@ class AddScheduleDialog(QDialog):
 
 class SimpleDoctorInterface(QMainWindow):
     """Simplified Doctor Interface"""
-    
-    def __init__(self):
+
+    def __init__(self, pillbox_comm=None):
         super().__init__()
         self.db_manager = SimpleDataManager()
+        self.pillbox_comm = pillbox_comm
         self.setWindowTitle("Smart Pillbox Management System - Medication Schedule")
         self.setGeometry(100, 100, 1000, 600)
         
@@ -289,8 +290,7 @@ class SimpleDoctorInterface(QMainWindow):
                 schedule = SimpleMedicationSchedule(**data)
                 self.db_manager.save_schedule(schedule)
                 self.load_schedules()
-                QMessageBox.information(self, "Success", "Medication schedule added successfully")
-                
+
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to add schedule: {str(e)}")
     
@@ -329,8 +329,87 @@ class SimpleDoctorInterface(QMainWindow):
     
     def send_config_to_pillbox(self):
         """Send Configuration to Pillbox"""
-        # This can integrate with pillbox communication functionality
-        QMessageBox.information(self, "Notice", "Configuration sending function will be integrated in main program")
+        if not self.pillbox_comm:
+            QMessageBox.warning(self, "Warning", "Pillbox communicator not available")
+            return
+
+        if not self.pillbox_comm.is_connected:
+            QMessageBox.warning(self, "Warning", "Not connected to pillbox. Please connect first.")
+            return
+
+        # Get all active schedules
+        schedules = self.db_manager.get_all_schedules()
+        active_schedules = [s for s in schedules if s.is_active]
+
+        if not active_schedules:
+            QMessageBox.warning(self, "Warning", "No active medication schedules to send")
+            return
+
+        # Confirm with user
+        reply = QMessageBox.question(
+            self,
+            "Confirm Send",
+            f"Send {len(active_schedules)} active medication schedule(s) to pillbox?\n\n"
+            f"ESP32 will automatically assign medications to storage boxes.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Convert to dict format
+        schedules_data = []
+        for schedule in active_schedules:
+            schedules_data.append({
+                'medication_id': schedule.medication_id,
+                'times_per_day': schedule.times_per_day,
+                'dosage_count': schedule.dosage_count,
+                'schedule_times': schedule.schedule_times,
+                'start_date': schedule.start_date,
+                'end_date': schedule.end_date,
+                'notes': schedule.notes,
+                'is_active': schedule.is_active
+            })
+
+        # Send to ESP32
+        try:
+            response = self.pillbox_comm.send_schedule_config(schedules_data)
+
+            if response.get('status') == 'OK':
+                # Success - show assignment results
+                assignments = response.get('assignments', [])
+
+                message = f"Configuration sent successfully!\n\n"
+                message += f"ESP32 Assignment Results:\n"
+                for assignment in assignments:
+                    med_id = assignment.get('medication_id', 'Unknown')
+                    box = assignment.get('box', -1)
+                    message += f"  {med_id} -> Box {box}\n"
+
+                QMessageBox.information(self, "Success", message)
+
+            elif response.get('status') == 'TIMEOUT':
+                QMessageBox.warning(
+                    self,
+                    "Timeout",
+                    "No response from ESP32. Configuration may have been received.\n\n"
+                    "Please check ESP32 serial output."
+                )
+            else:
+                # Error
+                error_msg = response.get('message', 'Unknown error')
+                QMessageBox.critical(
+                    self,
+                    "Send Failed",
+                    f"Failed to send configuration:\n{error_msg}"
+                )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Unexpected error:\n{str(e)}"
+            )
     
     def send_test_reminder(self):
         """Send Test Reminder"""

@@ -38,7 +38,7 @@ class MedicationCalendarWidget(QWidget):
         # Title
         title_label = QLabel("📅 Medication Records Calendar")
         title_font = QFont()
-        title_font.setPointSize(16)
+        title_font.setPointSize(20)
         title_font.setBold(True)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)

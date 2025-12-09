@@ -81,7 +81,7 @@ class ESP32Discovery:
 
 def discover_esp32(timeout=3, max_retries=3) -> Tuple[Optional[str], Optional[int]]:
     """
-    Convenience function to discover ESP32
+    Convenience function to discover ESP32 Main Controller
 
     Args:
         timeout: Seconds to wait for response
@@ -95,8 +95,70 @@ def discover_esp32(timeout=3, max_retries=3) -> Tuple[Optional[str], Optional[in
         if ip:
             print(f"Found ESP32 at {ip}:{port}")
     """
-    discovery = ESP32Discovery(timeout=timeout)
+    discovery = ESP32Discovery(timeout=timeout, udp_port=8888)
     return discovery.discover_with_retry(max_retries=max_retries)
+
+
+def discover_esp32_cam(timeout=3, max_retries=3) -> Tuple[Optional[str], Optional[int]]:
+    """
+    Convenience function to discover ESP32-CAM
+
+    Args:
+        timeout: Seconds to wait for response
+        max_retries: Number of retry attempts
+
+    Returns:
+        (ip_address, port) or (None, None)
+
+    Example:
+        ip, port = discover_esp32_cam()
+        if ip:
+            print(f"Found ESP32-CAM at {ip}:{port}")
+    """
+    print("[Discovery] Searching for ESP32-CAM device via UDP broadcast...")
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(timeout)
+
+        for attempt in range(1, max_retries + 1):
+            if attempt > 1:
+                print(f"\n[Retry] Retry attempt {attempt}/{max_retries}...")
+
+            # Send discovery broadcast to ESP32-CAM port 8889
+            discovery_message = b"DISCOVER_CAM"
+            sock.sendto(discovery_message, ('<broadcast>', 8889))
+            print(f"  [Broadcast] Sent broadcast to port 8889")
+
+            try:
+                data, addr = sock.recvfrom(1024)
+                response = json.loads(data.decode('utf-8'))
+
+                if response.get('device') == 'ESP32-CAM':
+                    ip = response.get('ip')
+                    port = response.get('port', 8081)
+
+                    print(f"  [Success] Found ESP32-CAM at {ip}:{port}")
+                    print(f"    Camera ready: {response.get('camera_ready', False)}")
+
+                    sock.close()
+                    return ip, port
+
+            except socket.timeout:
+                print("  [Failed] No response from ESP32-CAM (timeout)")
+            except json.JSONDecodeError as e:
+                print(f"  [Error] Invalid JSON response: {e}")
+
+            if attempt < max_retries:
+                time.sleep(1)
+
+        sock.close()
+
+    except Exception as e:
+        print(f"  [Error] Discovery error: {e}")
+
+    return None, None
 
 
 def save_to_config(ip: str, port: int, config_file="system_config.json"):

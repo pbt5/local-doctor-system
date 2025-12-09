@@ -160,7 +160,7 @@ class SimpleDoctorInterface(QMainWindow):
         
         # Set font
         font = QFont()
-        font.setPointSize(10)
+        font.setPointSize(14)
         self.setFont(font)
         
         self.setup_ui()
@@ -176,7 +176,7 @@ class SimpleDoctorInterface(QMainWindow):
         # Title
         title_label = QLabel("Medication Schedule Management")
         title_font = QFont()
-        title_font.setPointSize(16)
+        title_font.setPointSize(20)
         title_font.setBold(True)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)

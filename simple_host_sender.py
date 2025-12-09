@@ -237,14 +237,17 @@ class SimplePillboxCommunicator:
 
     def _handle_box_event(self, data: Dict):
         """Handle Box Open/Close Event"""
+        print(f"[DEBUG] Received box_event: {data}")
         event = BoxEvent(
             box=data.get('box', 0),
             state=data.get('state', 'unknown'),
             time=data.get('time', '')
         )
+        print(f"[DEBUG] Created BoxEvent: box={event.box}, state={event.state}, time={event.time}")
 
         # Put message in queue for GUI thread to process (thread-safe)
         self.message_queue.put(('box_event', event))
+        print(f"[DEBUG] box_event put in queue")
 
     def _handle_compartment_status(self, data: Dict):
         """Handle Pillbox Compartment Status"""
@@ -479,3 +482,213 @@ class ESP32Sender:
         if self.socket:
             self.socket.close()
             self.socket = None
+
+
+# ==================== ESP32-CAM Communicator ====================
+
+class ESP32CamCommunicator:
+    """
+    Handle ESP32-CAM WiFi direct communication
+    Connects to ESP32-CAM on port 8081 for photo capture
+    """
+
+    def __init__(self, ip: str = "192.168.1.100", port: int = 8081):
+        self.ip = ip
+        self.port = port
+        self.socket = None
+        self.is_connected = False
+        self.receive_thread = None
+        self.running = False
+        self.photo_handler = None
+        self.message_queue = Queue()
+
+    def connect(self) -> bool:
+        """Connect to ESP32-CAM via TCP"""
+        try:
+            print(f"[CAM] Connecting to ESP32-CAM at {self.ip}:{self.port}...")
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(5)
+            self.socket.connect((self.ip, self.port))
+            self.is_connected = True
+            print(f"[CAM] Connected to ESP32-CAM!")
+
+            # Start receive thread
+            self.running = True
+            self.receive_thread = threading.Thread(target=self._receive_loop, daemon=True)
+            self.receive_thread.start()
+
+            return True
+        except socket.timeout:
+            print(f"[CAM] Connection timeout")
+            return False
+        except socket.error as e:
+            print(f"[CAM] Connection failed: {e}")
+            return False
+        except Exception as e:
+            print(f"[CAM] Connection error: {e}")
+            return False
+
+    def disconnect(self):
+        """Disconnect from ESP32-CAM"""
+        print("[CAM] Disconnecting...")
+        self.running = False
+        self.is_connected = False
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
+        print("[CAM] Disconnected")
+
+    def take_photo(self, box: int, med_name: str, count: int = 3) -> bool:
+        """
+        Request ESP32-CAM to take photos
+
+        Args:
+            box: Box number (1-7)
+            med_name: Medication name
+            count: Number of photos to take (default: 3)
+
+        Returns:
+            bool: True if command sent successfully
+        """
+        if not self.is_connected:
+            print("[CAM] Not connected, cannot take photo")
+            return False
+
+        cmd = {
+            "cmd": "TAKE_PHOTO",
+            "box": box,
+            "med_name": med_name,
+            "count": count
+        }
+
+        print(f"[CAM] Requesting {count} photos for Box {box} ({med_name})")
+        return self._send_json(cmd)
+
+    def get_frame(self) -> bool:
+        """
+        Request a single frame from ESP32-CAM for live preview
+
+        Returns:
+            bool: True if command sent successfully
+        """
+        if not self.is_connected:
+            return False
+
+        cmd = {"cmd": "GET_FRAME"}
+        return self._send_json(cmd)
+
+    def _send_json(self, data: dict) -> bool:
+        """Send JSON data to ESP32-CAM"""
+        if not self.socket:
+            return False
+        try:
+            message = json.dumps(data) + '\n'
+            self.socket.send(message.encode('utf-8'))
+            return True
+        except socket.error as e:
+            print(f"[CAM] Send error: {e}")
+            self.is_connected = False
+            return False
+
+    def _receive_loop(self):
+        """Background thread to receive data from ESP32-CAM"""
+        buffer = ""
+        while self.running:
+            try:
+                if not self.socket:
+                    break
+
+                self.socket.settimeout(1)
+                data = self.socket.recv(65536)  # Large buffer for photo data
+
+                if not data:
+                    print("[CAM] Connection closed by server")
+                    self.is_connected = False
+                    break
+
+                buffer += data.decode('utf-8')
+
+                # Process complete JSON messages (newline delimited)
+                while '\n' in buffer:
+                    line, buffer = buffer.split('\n', 1)
+                    if line.strip():
+                        self._handle_message(line.strip())
+
+            except socket.timeout:
+                continue
+            except socket.error as e:
+                if self.running:
+                    print(f"[CAM] Receive error: {e}")
+                    self.is_connected = False
+                break
+            except Exception as e:
+                if self.running:
+                    print(f"[CAM] Receive loop error: {e}")
+                break
+
+        print("[CAM] Receive loop ended")
+
+    def _handle_message(self, message: str):
+        """Handle received message from ESP32-CAM"""
+        import base64
+        try:
+            data = json.loads(message)
+            msg_type = data.get("type", "")
+
+            if msg_type == "welcome":
+                print(f"[CAM] Welcome from {data.get('device', 'unknown')}")
+                print(f"[CAM] Camera ready: {data.get('camera_ready', False)}")
+
+            elif msg_type == "photo_data":
+                print(f"[CAM] Received photo: {data.get('filename', 'unknown')}")
+                # Save photo using PhotoHandler
+                if self.photo_handler:
+                    success = self.photo_handler.handle_photo_data(data)
+                    if success:
+                        print(f"[CAM] Photo saved successfully")
+                    else:
+                        print(f"[CAM] Failed to save photo")
+                else:
+                    print("[CAM] Warning: No photo handler configured")
+                # Queue message for GUI
+                self.message_queue.put(("photo_received", data))
+
+            elif msg_type == "frame_data":
+                # Decode base64 frame data for live preview
+                try:
+                    frame_bytes = base64.b64decode(data.get("data", ""))
+                    self.message_queue.put(("frame_data", {
+                        'data': frame_bytes,
+                        'width': data.get('width', 640),
+                        'height': data.get('height', 480),
+                        'size': data.get('size', 0)
+                    }))
+                except Exception as e:
+                    print(f"[CAM] Frame decode error: {e}")
+
+            elif msg_type == "photo_complete":
+                count = data.get("count", 0)
+                box = data.get("box", 0)
+                print(f"[CAM] Photo capture complete: {count} photos for Box {box}")
+                self.message_queue.put(("photo_complete", data))
+
+            elif msg_type == "error":
+                print(f"[CAM] Error from camera: {data.get('message', 'unknown')}")
+                self.message_queue.put(("cam_error", data))
+
+            elif msg_type == "pong":
+                print("[CAM] Pong received")
+
+            elif msg_type == "status":
+                print(f"[CAM] Status: Camera ready={data.get('camera_ready')}, RSSI={data.get('wifi_rssi')}dBm")
+
+            else:
+                print(f"[CAM] Unknown message type: {msg_type}")
+
+        except json.JSONDecodeError as e:
+            print(f"[CAM] JSON parse error: {e}")
+        except Exception as e:
+            print(f"[CAM] Message handling error: {e}")
